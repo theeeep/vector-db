@@ -13,14 +13,14 @@ openai_ef = embedding_functions.OpenAIEmbeddingFunction(
     api_key=openai_api_key, model_name="text-embedding-3-small"
 )
 
-# Initalize ChromaDB
+# *Initalize ChromaDB
 chroma_client = chromadb.PersistentClient(path="chroma-storage")
 collection_name = "document_collection"
 collection = chroma_client.get_or_create_collection(
     name=collection_name, embedding_function=openai_ef
 )
 
-# Initialize OpenAI
+# *Initialize OpenAI
 client = OpenAI(api_key=openai_api_key)
 
 # response = client.chat.completions.create(
@@ -36,7 +36,7 @@ client = OpenAI(api_key=openai_api_key)
 # print(response.choices[0].message.content)
 
 
-# Function to load document from a directory
+# *Function to load document from a directory
 def load_docuemnts_from_directory(directory_path):
     print(f"---- Loading documents from {directory_path} ----")
     documents = []
@@ -66,16 +66,94 @@ def split_text_into_chunks(text, chunk_size=1000, overlap=20):
     return chunks
 
 
-# Load documents from the directory
+# *Load documents from the directory
 directory_path = "./news_article"
 documents = load_docuemnts_from_directory(directory_path)
 
 print(f"---- Loaded {len(documents)} documents ----")
 
-# Split documents into chunks
+# *Split documents into chunks
+chunked_doc = []
 for doc in documents:
     chunks = split_text_into_chunks(doc["content"])
     for i, chunk in enumerate(chunks):
-        chunked_doc = {"id": f"{doc['id']}_{i}", "content": chunk}
+        chunked_doc.append({"id": f"{doc['id']}_chunk{i+1}", "content": chunk})
 
 print(f"---- Split {len(documents)} documents into {len(chunks)} chunks ----")
+
+
+# *Function to generate embeddings using OpenAI API
+def get_openai_embeddings(content):
+    response = client.embeddings.create(input=content, model="text-embedding-3-small")
+    embedding = response.data[0].embedding
+    print(f"---- Generating embeddings for {content} ----")
+    return embedding
+
+
+# *Generate embeddings for the document chunks
+for doc in chunked_doc:
+    print(f"---- Generating embeddings for {doc['id']} ----")
+    doc["embedding"] = get_openai_embeddings(doc["content"])
+    # print(doc["embedding"])
+
+# *Upsert documents into ChromaDB
+for doc in chunked_doc:
+    print(f"---- Upserting {len(chunked_doc)} documents into ChromaDB ----")
+    collection.upsert(
+        ids=[doc["id"]],
+        documents=[doc["content"]],
+        embeddings=[doc["embedding"]],
+    )
+# collection.upsert(
+#     documents=chunked_doc,
+#     ids=[doc["id"] for doc in chunked_doc],
+#     embeddings=[doc["embedding"] for doc in chunked_doc],
+# )
+
+
+# *Function to query documents
+def query_documents(question, n_results=2):
+    results = collection.query(query_texts=question, n_results=n_results)
+
+    # Extract the relevant chunks
+    relevant_chunks = [doc for sublist in results["documents"] for doc in sublist]
+    print("---- Returning relevant chunks ----")
+    return relevant_chunks
+
+
+# Function to generate a response from OpenAI
+def generate_response(question, relevant_chunks):
+    context = "\n\n".join(relevant_chunks)
+    prompt = (
+        "You are an assistant for question-answering tasks. Use the following pieces of "
+        "retrieved context to answer the question. If you don't know the answer, say that you "
+        "don't know. Use three sentences maximum and keep the answer concise."
+        "\n\nContext:\n" + context + "\n\nQuestion:\n" + question
+    )
+
+    response = client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=[
+            {
+                "role": "system",
+                "content": prompt,
+            },
+            {
+                "role": "user",
+                "content": question,
+            },
+        ],
+    )
+
+    answer = response.choices[0].message
+    return answer
+
+
+# Example query
+# query_documents("tell me about AI replacing TV writers strike.")
+# Example query and response generation
+question = "tell me about databricks"
+relevant_chunks = query_documents(question)
+answer = generate_response(question, relevant_chunks)
+
+print(answer)
